@@ -242,13 +242,13 @@ async def gather_facts(
     )
 
     specialists: list[tuple[str, Any]] = [
-        ("order-agent", order_agent(case_id, order_id, gateway, trace, facts)),
-        ("payment-agent", payment_agent(case_id, order_id, gateway, trace, facts)),
-        ("shipment-agent", shipment_agent(case_id, order_id, gateway, trace, facts)),
-        ("policy-agent", policy_agent(case_id, policy_version, gateway, trace, facts)),
+        ("order-agent", order_agent),
+        ("payment-agent", payment_agent),
+        ("shipment-agent", shipment_agent),
+        ("policy-agent", policy_agent),
     ]
 
-    for actor, coroutine in specialists:
+    for actor, specialist in specialists:
         trace.emit(
             case_id=case_id,
             event_type="task_assigned",
@@ -257,7 +257,10 @@ async def gather_facts(
             decision_code=f"assign-{actor}",
         )
         before = set(facts.evidence)
-        await coroutine
+        if actor == "policy-agent":
+            await specialist(case_id, policy_version, gateway, trace, facts)
+        else:
+            await specialist(case_id, order_id, gateway, trace, facts)
         handoff_refs = [
             evidence.evidence_ref
             for kind, evidence in facts.evidence.items()

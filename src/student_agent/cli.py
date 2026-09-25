@@ -121,6 +121,10 @@ def main() -> None:
         elif args.command == "package":
             destination = package_submission(root, root / args.output)
             print(f"OK: {destination}")
+    except ExceptionGroup as exc:
+        detail = exc.exceptions[0] if exc.exceptions else exc
+        print(f"ERROR: MCP transport failure ({detail})", file=sys.stderr)
+        raise SystemExit(1) from exc
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
