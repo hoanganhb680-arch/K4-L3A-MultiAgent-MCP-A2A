@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from .mcp_gateway import EvidenceGateway
@@ -19,15 +20,15 @@ async def consume_evidence(
     tool_name: str,
     arguments: dict[str, str],
 ) -> Evidence | None:
-    """Call the MCP gateway once (with a single idempotent retry), validate the payload
+    """Call the MCP gateway with bounded retries, validate the payload
     and record a ``tool_result_consumed`` event for evidence that is actually used.
 
     Returns ``None`` when the tool is optional and reports no record (e.g. no refund
     timeline) or after bounded retries fail; callers must then treat the fact as
     missing rather than fabricate it.
     """
-    attempts = 1 if tool_name in _OPTIONAL_TOOLS else 2
-    for _ in range(attempts):
+    delays = [] if tool_name in _OPTIONAL_TOOLS else [5, 10, 20, 40, 80]
+    for attempt in range(len(delays) + 1):
         try:
             payload = await gateway.call(tool_name, case_id=case_id, **arguments)
             evidence_ref = payload["evidence_ref"]
@@ -43,7 +44,9 @@ async def consume_evidence(
                 domain=payload["domain"],
                 data=payload.get("data"),
             )
-        except Exception:  # noqa: BLE001 - gateway failures are recorded, not swallowed
+        except Exception:  # noqa: BLE001 - unavailable evidence remains missing
+            if attempt < len(delays):
+                await asyncio.sleep(delays[attempt])
             continue
     return None
 
