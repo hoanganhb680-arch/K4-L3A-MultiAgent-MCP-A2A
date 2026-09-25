@@ -101,22 +101,24 @@ async def _order_agent(
     order_id: str,
     gateway: EvidenceGateway,
     trace: TraceWriter,
+    topics: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch order header, line items and seller details."""
+    """Fetch order header and line items selectively."""
     actor = "order-agent"
 
     order_data, ref_order = await _call(
         "get_order", gateway, trace, actor, case_id, order_id=order_id
     )
-    items_data, ref_items = await _call(
-        "get_order_items", gateway, trace, actor, case_id, order_id=order_id
-    )
-    sellers_data, ref_sellers = await _call(
-        "get_sellers", gateway, trace, actor, case_id, order_id=order_id
-    )
 
-    collected_refs = [r for r in [ref_order, ref_items, ref_sellers] if r is not None]
-    status = "ok" if order_data else "not_found"
+    items_data, ref_items = {}, None
+    # Only fetch order items if order is available or needed
+    if order_data and not order_data.get("error"):
+        items_data, ref_items = await _call(
+            "get_order_items", gateway, trace, actor, case_id, order_id=order_id
+        )
+
+    collected_refs = [r for r in [ref_order, ref_items] if r is not None]
+    status = "ok" if (order_data and not order_data.get("error")) else "not_found"
 
     trace.emit(
         case_id=case_id,
@@ -132,7 +134,6 @@ async def _order_agent(
         "data": {
             "order": order_data,
             "items": items_data,
-            "sellers": sellers_data,
         },
     }
 
@@ -142,19 +143,29 @@ async def _payment_agent(
     order_id: str,
     gateway: EvidenceGateway,
     trace: TraceWriter,
+    topics: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch payment records, payment timeline and refund timeline."""
+    """Fetch payment records, payment timeline and refund timeline selectively."""
     actor = "payment-agent"
+    topics = topics or set()
 
     payments_data, ref_payments = await _call(
         "get_order_payments", gateway, trace, actor, case_id, order_id=order_id
     )
-    pay_timeline_data, ref_pay_tl = await _call(
-        "get_payment_timeline", gateway, trace, actor, case_id, order_id=order_id
-    )
-    refund_timeline_data, ref_ref_tl = await _call(
-        "get_refund_timeline", gateway, trace, actor, case_id, order_id=order_id
-    )
+
+    pay_timeline_data, ref_pay_tl = {}, None
+    # Call payment timeline if useful for mismatch / duplicate / canceled
+    if topics.intersection({"payment_mismatch", "duplicate_charge", "canceled_order_paid", "valid_split_payment"}):
+        pay_timeline_data, ref_pay_tl = await _call(
+            "get_payment_timeline", gateway, trace, actor, case_id, order_id=order_id
+        )
+
+    refund_timeline_data, ref_ref_tl = {}, None
+    # ONLY call get_refund_timeline if claim relates to refund_pending or refund_failed
+    if topics.intersection({"refund_pending", "refund_failed"}):
+        refund_timeline_data, ref_ref_tl = await _call(
+            "get_refund_timeline", gateway, trace, actor, case_id, order_id=order_id
+        )
 
     collected_refs = [r for r in [ref_payments, ref_pay_tl, ref_ref_tl] if r is not None]
     status = "ok" if payments_data else "not_found"
@@ -183,13 +194,18 @@ async def _shipment_agent(
     order_id: str,
     gateway: EvidenceGateway,
     trace: TraceWriter,
+    topics: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Fetch shipment summary and delivery status."""
+    """Fetch shipment summary selectively for delivery claims."""
     actor = "shipment-agent"
+    topics = topics or set()
 
-    shipment_data, ref_ship = await _call(
-        "get_shipment_summary", gateway, trace, actor, case_id, order_id=order_id
-    )
+    shipment_data, ref_ship = {}, None
+    # ONLY call get_shipment_summary if topic relates to delivery issues
+    if not topics or topics.intersection({"late_delivery_seller", "late_delivery_logistics"}):
+        shipment_data, ref_ship = await _call(
+            "get_shipment_summary", gateway, trace, actor, case_id, order_id=order_id
+        )
 
     collected_refs = [r for r in [ref_ship] if r is not None]
     status = "ok" if shipment_data else "not_found"
@@ -330,17 +346,27 @@ def _determine_primary_issue(
     refund_status = _extract_refund_status(payment_res)
     topics = {c.get("topic", "") for c in claims}
 
+    # Verify if valid order object actually exists
+    order_obj = order_res.get("data", {}).get("order")
+    has_order = False
+    if isinstance(order_obj, dict):
+        if order_obj.get("order_id") and not order_obj.get("error"):
+            has_order = True
+        elif order_status != "":
+            has_order = True
+
     # 1. No evidence at all
-    if not order_res.get("data", {}).get("order") and not has_payment:
+    if not has_order and not has_payment:
         return "insufficient_evidence"
 
-    # 2. Canceled order that was paid -> full refund owed
+    # 2. Order record missing but payment exists -> unavailable_order_paid
+    # (MUST be evaluated BEFORE duplicate charge detection)
+    if not has_order and has_payment:
+        return "unavailable_order_paid"
+
+    # 3. Canceled order that was paid -> full refund owed
     if order_status == "canceled" and has_payment:
         return "canceled_order_paid"
-
-    # 3. Order record missing but payment exists
-    if not order_res.get("data", {}).get("order") and has_payment:
-        return "unavailable_order_paid"
 
     # 4. Refund already initiated but pending
     if refund_status in {"pending", "processing"}:
@@ -386,9 +412,9 @@ def _determine_primary_issue(
 
     # 10. Topic-driven fallback (priority ordered)
     priority_topics = [
-        "payment_mismatch", "duplicate_charge", "refund_pending", "refund_failed",
-        "late_delivery_seller", "late_delivery_logistics", "valid_split_payment",
-        "canceled_order_paid", "unavailable_order_paid",
+        "unavailable_order_paid", "canceled_order_paid", "duplicate_charge",
+        "refund_pending", "refund_failed", "late_delivery_seller",
+        "late_delivery_logistics", "payment_mismatch", "valid_split_payment",
     ]
     for t in priority_topics:
         if t in topics:
@@ -455,7 +481,7 @@ def _determine_responsible_party(
 
 
 def _calibrate_confidence(primary_issue: str, n_ok: int, total: int) -> float:
-    base = 0.9 if primary_issue not in {"unsupported_claim", "insufficient_evidence"} else 0.5
+    base = 0.95 if primary_issue not in {"unsupported_claim", "insufficient_evidence"} else 0.5
     coverage = n_ok / max(total, 1)
     return round(max(0.1, base * coverage), 2)
 
@@ -565,7 +591,7 @@ def _verifier(
                 seller_ids_set.add(str(sid))
     if not seller_ids_set and isinstance(order_data, dict) and order_data.get("seller_id"):
         seller_ids_set.add(order_data["seller_id"])
-    
+
     item_ids = list(dict.fromkeys(item_ids))
 
     payment_refs = list(dict.fromkeys(str(p.get("payment_sequential", i)) for i, p in enumerate(payments)))
@@ -670,6 +696,7 @@ async def solve_case(
     order_id: str = customer_req.get("claimed_order_id", "")
     claims: list[dict[str, Any]] = customer_req.get("claims", [])
     policy_version: str = case.get("policy_version", "EC_POLICY_V1")
+    topics = {c.get("topic", "") for c in claims}
 
     # Lifecycle: case_received
     trace.emit(
@@ -690,13 +717,13 @@ async def solve_case(
 
     # Run specialists sequentially (avoids cross-scope evidence risk)
     log.info("[%s] order-agent starting", case_id)
-    order_res = await _order_agent(case_id, order_id, gateway, trace)
+    order_res = await _order_agent(case_id, order_id, gateway, trace, topics)
 
     log.info("[%s] payment-agent starting", case_id)
-    payment_res = await _payment_agent(case_id, order_id, gateway, trace)
+    payment_res = await _payment_agent(case_id, order_id, gateway, trace, topics)
 
     log.info("[%s] shipment-agent starting", case_id)
-    shipment_res = await _shipment_agent(case_id, order_id, gateway, trace)
+    shipment_res = await _shipment_agent(case_id, order_id, gateway, trace, topics)
 
     log.info("[%s] policy-agent starting", case_id)
     policy_res = await _policy_agent(case_id, policy_version, gateway, trace)
