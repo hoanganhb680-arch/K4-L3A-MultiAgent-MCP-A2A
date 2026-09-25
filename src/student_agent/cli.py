@@ -46,31 +46,43 @@ async def _run(root: Path) -> None:
         empty_cases = 0
         outage = False
 
-        async with connect_gateway(
-            settings.mcp_endpoint, settings.team_api_key, contracts
-        ) as gateway:
-            discovered_tools = await gateway.list_tools()
-            if not discovered_tools:
-                raise RuntimeError("MCP Gateway returned no tools")
-            for case_id in case_set.case_ids:
-                case = case_set.cases[case_id]
-                trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
-                output = await solve_case(case, gateway, trace)
-                contracts.validate_output(output, f"outputs/{case_id}.json")
-                if output.get("case_id") != case_id:
-                    raise ValueError(f"solver returned a mismatched case_id for {case_id}")
-                if not output["evidence_refs"]:
-                    empty_cases += 1
-                else:
-                    empty_cases = 0
-                if empty_cases >= 3:
-                    outage = True
-                    break
-                target = staged_outputs / f"{case_id}.json"
-                target.write_text(
-                    json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
-                trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
+        for case_id in case_set.case_ids:
+            case = case_set.cases[case_id]
+            trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
+            solved = False
+            try:
+                # Keep one MCP session per case. The hosted gateway can reset a long-lived
+                # stream after several dozen calls; a case boundary is safe to reconnect.
+                async with connect_gateway(
+                    settings.mcp_endpoint, settings.team_api_key, contracts
+                ) as gateway:
+                    discovered_tools = await gateway.list_tools()
+                    if not discovered_tools:
+                        raise RuntimeError("MCP Gateway returned no tools")
+                    output = await solve_case(case, gateway, trace)
+                    contracts.validate_output(output, f"outputs/{case_id}.json")
+                    if output.get("case_id") != case_id:
+                        raise ValueError(f"solver returned a mismatched case_id for {case_id}")
+                    target = staged_outputs / f"{case_id}.json"
+                    target.write_text(
+                        json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                    )
+                    solved = True
+            except Exception:
+                # If the response and staged output were complete, a stream reset while
+                # closing the session is harmless. Any failure before that remains fatal.
+                if not solved:
+                    raise
+            if not solved:
+                raise RuntimeError(f"MCP case {case_id} did not produce an output")
+            if not output["evidence_refs"]:
+                empty_cases += 1
+            else:
+                empty_cases = 0
+            if empty_cases >= 3:
+                outage = True
+                break
+            trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
 
         if outage:
             raise RuntimeError("MCP returned no citable evidence for three consecutive cases")
