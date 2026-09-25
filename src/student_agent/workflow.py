@@ -88,7 +88,7 @@ async def _call(
         return data, ref
     except Exception as exc:  # noqa: BLE001
         log.warning("[%s] %s -> %s failed: %s", case_id, actor, tool, exc)
-        return {}, None
+        raise RuntimeError(f"MCP tool failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -359,9 +359,9 @@ def _determine_primary_issue(
     if not has_order and not has_payment:
         return "insufficient_evidence"
 
-    # 2. Order record missing but payment exists -> unavailable_order_paid
+    # 2. Order record missing or unavailable but payment exists -> unavailable_order_paid
     # (MUST be evaluated BEFORE duplicate charge detection)
-    if not has_order and has_payment:
+    if (not has_order or order_status == "unavailable") and has_payment:
         return "unavailable_order_paid"
 
     # 3. Canceled order that was paid -> full refund owed
