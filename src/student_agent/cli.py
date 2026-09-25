@@ -42,22 +42,28 @@ async def _run(root: Path) -> None:
 
     async with connect_gateway(settings.mcp_endpoint, settings.team_api_key, contracts) as gateway:
         discovered_tools = await gateway.list_tools()
-        if not discovered_tools:
-            raise RuntimeError("MCP Gateway returned no tools")
-        for case_id in case_set.case_ids:
-            case = case_set.cases[case_id]
-            trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
+    if not discovered_tools:
+        raise RuntimeError("MCP Gateway returned no tools")
+
+    # The evidence server can end long-lived streaming sessions. A fresh session
+    # per case isolates that transport lifecycle without changing case scope.
+    for case_id in case_set.case_ids:
+        case = case_set.cases[case_id]
+        trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
+        async with connect_gateway(
+            settings.mcp_endpoint, settings.team_api_key, contracts
+        ) as gateway:
             output = await solve_case(case, gateway, trace)
-            contracts.validate_output(output, f"outputs/{case_id}.json")
-            if output.get("case_id") != case_id:
-                raise ValueError(f"solver returned a mismatched case_id for {case_id}")
-            target = output_root / f"{case_id}.json"
-            temporary = target.with_suffix(".json.tmp")
-            temporary.write_text(
-                json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            temporary.replace(target)
-            trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
+        contracts.validate_output(output, f"outputs/{case_id}.json")
+        if output.get("case_id") != case_id:
+            raise ValueError(f"solver returned a mismatched case_id for {case_id}")
+        target = output_root / f"{case_id}.json"
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(target)
+        trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
 
 
 def parser() -> argparse.ArgumentParser:
