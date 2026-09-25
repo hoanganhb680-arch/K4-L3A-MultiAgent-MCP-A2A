@@ -56,6 +56,8 @@ def _verify(case_id: str, output: dict[str, Any], facts: CaseFacts) -> None:
     for key, ids in output["affected_entities"].items():
         if not all(isinstance(value, str) for value in ids):
             raise ValueError(f"verifier: {key} contains a non-string id")
+        if len(ids) > 20 or any(not value or len(value) > 128 for value in ids):
+            raise ValueError(f"verifier: {key} exceeds public id limits")
         if len(ids) != len(set(ids)):
             raise ValueError(f"verifier: {key} contains duplicate ids")
 
@@ -130,7 +132,11 @@ async def solve_case(
         case_id=case_id,
         event_type="policy_decided",
         actor="policy-agent",
-        decision_code=output["assessment"]["primary_issue"],
+        decision_code=(
+            output["assessment"]["primary_issue"]
+            if policy is not None
+            else "POLICY_UNAVAILABLE"
+        ),
         evidence_refs=policy_refs,
     )
 

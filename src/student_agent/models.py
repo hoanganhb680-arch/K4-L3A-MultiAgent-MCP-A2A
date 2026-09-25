@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -11,6 +11,14 @@ class Evidence:
     evidence_ref: str
     domain: str
     data: Any
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """Distinguish confirmed absence from a failed MCP read."""
+
+    status: Literal["found", "not_found", "error"]
+    evidence: Evidence | None = None
 
 
 @dataclass
@@ -28,6 +36,7 @@ class CaseFacts:
     payments: list[dict[str, Any]] = field(default_factory=list)
     payment_events: list[dict[str, Any]] = field(default_factory=list)
     refund_events: list[dict[str, Any]] = field(default_factory=list)
+    refund_lookup_status: Literal["unknown", "found", "not_found", "error"] = "unknown"
     shipment: dict[str, Any] = field(default_factory=dict)
     policy_rules: dict[str, Any] = field(default_factory=dict)
     evidence: dict[str, Evidence] = field(default_factory=dict)

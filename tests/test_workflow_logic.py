@@ -40,6 +40,13 @@ def test_verify_rejects_duplicate_ids(make_facts, make_evidence, case, captured)
         _verify("L3A_CASE_001", output, facts)
 
 
+def test_verify_rejects_more_than_twenty_ids(make_facts, make_evidence, case, captured) -> None:
+    facts, output = _canceled_output(make_facts, make_evidence, case, captured)
+    output["affected_entities"]["item_ids"] = [str(index) for index in range(21)]
+    with pytest.raises(ValueError, match="public id limits"):
+        _verify("L3A_CASE_001", output, facts)
+
+
 def test_verify_rejects_unknown_evidence_ref(make_facts, make_evidence, case, captured) -> None:
     facts, output = _canceled_output(make_facts, make_evidence, case, captured)
     output["evidence_refs"] = ["ev_" + "z" * 20]
@@ -67,11 +74,15 @@ def test_verify_rejects_seller_party_without_id(make_facts, make_evidence, case,
             "items": make_evidence("items", []),
             "sellers": make_evidence("sellers", []),
             "payments": make_evidence("payments", []),
+            "payment_timeline": make_evidence("payment_timeline", {"events": []}),
             "policy": make_evidence("policy", {}),
         },
     )
     output = build_output(case, facts)
-    assert output["root_cause_analysis"]["responsible_parties"][0]["party_type"] == "seller"
+    assert output["assessment"]["primary_issue"] == "insufficient_evidence"
+    output["root_cause_analysis"]["responsible_parties"] = [
+        {"party_type": "seller", "party_id": None}
+    ]
     with pytest.raises(ValueError):
         _verify("L3A_CASE_001", output, facts)
 

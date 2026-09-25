@@ -45,17 +45,17 @@ def extract_order_ids(facts: CaseFacts) -> list[str]:
 
 def extract_item_ids(facts: CaseFacts) -> list[str]:
     ids = [clean_id(item.get("order_item_id")) for item in facts.items]
-    return sorted(_unique(ids))
+    return sorted(_unique(ids))[:20]
 
 
 def extract_seller_ids(facts: CaseFacts) -> list[str]:
     ids = [clean_id(seller.get("seller_id")) for seller in facts.sellers]
     ids += [clean_id(item.get("seller_id")) for item in facts.items]
-    return sorted(_unique(ids))
+    return sorted(_unique(ids))[:20]
 
 
 def extract_payment_references(facts: CaseFacts) -> list[str]:
-    """Read canonical payment identifiers only when supplied by MCP."""
+    """Read only canonical payment identifiers supplied by MCP."""
     rows = [*facts.payments, *facts.payment_events]
     return _unique(
         [

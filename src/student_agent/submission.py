@@ -10,6 +10,7 @@ from typing import Any
 from . import OUTPUT_SCHEMA_VERSION, VARIANT_ID
 from .cases import CaseSet
 from .contracts import Contracts
+from .provenance import verify_run_metadata
 
 SECRET_PATTERN = re.compile(r"sk-team-[A-Za-z0-9_-]{8,}")
 MAX_FILE_BYTES = 1024 * 1024
@@ -42,6 +43,7 @@ def build_manifest(case_set: CaseSet) -> dict[str, Any]:
 def validate_artifacts(
     root: Path, case_set: CaseSet, contracts: Contracts
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    verify_run_metadata(root)
     outputs_root = root / "outputs"
     actual = {path.stem: path for path in outputs_root.glob("*.json") if path.is_file()}
     expected = set(case_set.case_ids)
@@ -65,6 +67,8 @@ def validate_artifacts(
         raise ValueError("traces/trace.jsonl is missing or not UTF-8") from exc
     normalized_lines: list[str] = []
     seen_events: set[str] = set()
+    consumed: dict[str, set[str]] = {case_id: set() for case_id in expected}
+    ref_owner: dict[str, str] = {}
     for number, line in enumerate(trace_lines, 1):
         if not line.strip():
             continue
@@ -78,7 +82,25 @@ def validate_artifacts(
         if event["event_id"] in seen_events:
             raise ValueError(f"traces/trace.jsonl:{number}: duplicate event_id")
         seen_events.add(event["event_id"])
+        if event["event_type"] == "tool_result_consumed":
+            for ref in event.get("evidence_refs", []):
+                owner = ref_owner.setdefault(ref, event["case_id"])
+                if owner != event["case_id"]:
+                    raise ValueError(
+                        f"evidence ref reused across cases: {owner}, {event['case_id']}"
+                    )
+                consumed[event["case_id"]].add(ref)
         normalized_lines.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+
+    for case_id, output in outputs.items():
+        final_refs = output["evidence_refs"]
+        if len(final_refs) != len(set(final_refs)):
+            raise ValueError(f"{case_id}: duplicate final evidence refs")
+        if not set(final_refs) <= consumed[case_id]:
+            raise ValueError(f"{case_id}: final evidence ref absent from same-case consumed trace")
+        for claim in output["claim_assessments"]:
+            if not set(claim["evidence_refs"]) <= set(final_refs):
+                raise ValueError(f"{case_id}: claim evidence ref absent from final evidence")
 
     serialized = [json.dumps(value, ensure_ascii=False) for value in outputs.values()]
     if SECRET_PATTERN.search("\n".join([*serialized, *normalized_lines])):

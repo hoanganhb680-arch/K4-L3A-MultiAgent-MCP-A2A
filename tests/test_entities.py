@@ -51,5 +51,31 @@ def test_payment_references_not_fabricated_from_order_id(make_facts) -> None:
     assert extract_payment_references(facts) == []
 
 
+def test_payment_sequential_is_not_a_reference(make_facts) -> None:
+    # Actual MCP shape: payment rows carry a sequence and an order ID, but no
+    # transaction or capture ID. Repeated sequence values identify one payment.
+    facts = make_facts(payments=[
+        {"order_id": "order-xyz", "payment_sequential": "1", "payment_value": "79.00"},
+        {"order_id": "order-xyz", "payment_sequential": "1", "payment_value": "18.00"},
+    ])
+    assert extract_payment_references(facts) == []
+
+
+def test_real_shipment_shape_without_identifier_stays_empty(make_facts) -> None:
+    facts = make_facts(shipment={
+        "order_id": "order-xyz", "delivered_customer_at": "2018-04-07T09:00:00-03:00",
+        "events": [{"event_type": "delivered_late", "actor": "logistics_provider"}],
+    })
+    assert extract_shipment_ids(facts) == []
+
+
 def test_shipment_ids_empty(make_facts) -> None:
     assert extract_shipment_ids(make_facts()) == []
+
+
+def test_item_and_seller_ids_respect_schema_limit(make_facts) -> None:
+    facts = make_facts(
+        items=[{"order_item_id": index, "seller_id": f"seller-{index:02}"} for index in range(25)]
+    )
+    assert len(extract_item_ids(facts)) == 20
+    assert len(extract_seller_ids(facts)) == 20

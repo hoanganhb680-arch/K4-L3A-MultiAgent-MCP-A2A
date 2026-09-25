@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 TEAM_KEY_PATTERN = re.compile(r"^sk-team-[A-Za-z0-9_-]{16,128}$")
 
@@ -20,10 +20,21 @@ class Settings:
     @classmethod
     def load(cls, root: Path | None = None) -> Settings:
         resolved_root = (root or Path.cwd()).resolve()
-        load_dotenv(resolved_root / ".env")
-        api_url = os.getenv("COMPETITION_API_URL", "").strip().rstrip("/")
-        team_key = os.getenv("COMPETITION_TEAM_API_KEY", "").strip()
-        mcp_endpoint = os.getenv("MCP_ENDPOINT", "").strip()
+        file_values = dotenv_values(resolved_root / ".env")
+        process_key = os.environ.get("COMPETITION_TEAM_API_KEY", "").strip()
+        file_key = (file_values.get("COMPETITION_TEAM_API_KEY") or "").strip()
+        if process_key and file_key and process_key != file_key:
+            raise ValueError(
+                "COMPETITION_TEAM_API_KEY differs between process environment and .env. "
+                "Refusing to run because this can create cross-team evidence refs."
+            )
+
+        def setting(name: str) -> str:
+            return (os.environ.get(name) or file_values.get(name) or "").strip()
+
+        api_url = setting("COMPETITION_API_URL").rstrip("/")
+        team_key = process_key or file_key
+        mcp_endpoint = setting("MCP_ENDPOINT")
         errors: list[str] = []
         if not api_url.startswith(("http://", "https://")):
             errors.append("COMPETITION_API_URL must be an absolute HTTP(S) URL")

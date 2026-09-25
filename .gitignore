@@ -15,6 +15,9 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+.day09-run.json
+.day09-run.tmp
+.day09-run-*/
 
 # Competition runtime artifacts
 case-set.json
