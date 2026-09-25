@@ -45,7 +45,7 @@ async def consume_evidence(
             if exc.kind == "not_found":
                 return FetchResult("not_found")
             if exc.kind != "transient":
-                return FetchResult("error")
+                return FetchResult("permanent_error")
         except (
             httpx2.TransportError,
             TimeoutError,
@@ -56,7 +56,7 @@ async def consume_evidence(
             pass
         if attempt < len(delays):
             await asyncio.sleep(delays[attempt])
-    return FetchResult("error")
+    return FetchResult("transient_error")
 
 
 async def order_agent(
@@ -241,14 +241,20 @@ async def gather_facts(
         policy_version=policy_version,
     )
 
-    specialists: list[tuple[str, Any]] = [
-        ("order-agent", order_agent),
-        ("payment-agent", payment_agent),
-        ("shipment-agent", shipment_agent),
-        ("policy-agent", policy_agent),
+    specialists: list[tuple[str, Any, tuple[Any, ...]]] = [
+        ("order-agent", order_agent, (case_id, order_id, gateway, trace, facts)),
+        ("payment-agent", payment_agent, (case_id, order_id, gateway, trace, facts)),
+        ("shipment-agent", shipment_agent, (case_id, order_id, gateway, trace, facts)),
+        ("policy-agent", policy_agent, (case_id, policy_version, gateway, trace, facts)),
     ]
-
-    for actor, specialist in specialists:
+    owned = {
+        "order-agent": {"order", "items", "sellers"},
+        "payment-agent": {"payments", "payment_timeline", "refund"},
+        "shipment-agent": {"shipment"},
+        "policy-agent": {"policy"},
+    }
+    before: dict[str, set[str]] = {}
+    for actor, _specialist, _arguments in specialists:
         trace.emit(
             case_id=case_id,
             event_type="task_assigned",
@@ -256,15 +262,20 @@ async def gather_facts(
             target=actor,
             decision_code=f"assign-{actor}",
         )
-        before = set(facts.evidence)
-        if actor == "policy-agent":
-            await specialist(case_id, policy_version, gateway, trace, facts)
-        else:
-            await specialist(case_id, order_id, gateway, trace, facts)
+        before[actor] = set(facts.evidence)
+
+    await asyncio.gather(
+        *(
+            specialist(*arguments)
+            for _actor, specialist, arguments in specialists
+        )
+    )
+
+    for actor, _specialist, _arguments in specialists:
         handoff_refs = [
             evidence.evidence_ref
             for kind, evidence in facts.evidence.items()
-            if kind not in before
+            if kind in owned[actor] and kind not in before[actor]
         ]
         trace.emit(
             case_id=case_id,

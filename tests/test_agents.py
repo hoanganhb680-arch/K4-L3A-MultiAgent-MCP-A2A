@@ -63,7 +63,7 @@ def test_explicit_not_found_is_distinct_from_error() -> None:
 
 def test_generic_tool_error_is_not_retried() -> None:
     gateway = FakeGateway({"get_order": [MCPToolError("get_order", "generic")]})
-    assert fetch(gateway, FakeTrace()).status == "error"
+    assert fetch(gateway, FakeTrace()).status == "permanent_error"
     assert len(gateway.calls) == 1
 
 
@@ -86,11 +86,20 @@ def test_programming_error_propagates() -> None:
         fetch(gateway, FakeTrace())
 
 
+def test_exhausted_transient_error_is_distinct_from_permanent(monkeypatch) -> None:
+    async def no_wait(_seconds):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    gateway = FakeGateway({"get_order": [TimeoutError() for _ in range(3)]})
+    assert fetch(gateway, FakeTrace()).status == "transient_error"
+
+
 @pytest.mark.parametrize(
     ("refund_response", "expected_status", "missing"),
     [
         (MCPToolError("get_refund_timeline", "404", kind="not_found"), "not_found", False),
-        (MCPToolError("get_refund_timeline", "generic"), "error", True),
+        (MCPToolError("get_refund_timeline", "generic"), "permanent_error", True),
     ],
 )
 def test_refund_lookup_status(make_facts, refund_response, expected_status, missing) -> None:

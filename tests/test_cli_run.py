@@ -10,7 +10,7 @@ import pytest
 import student_agent.cli as cli
 
 
-def test_outage_does_not_replace_previous_artifacts(
+def test_empty_evidence_cases_complete_without_replacing_stale_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     outputs = tmp_path / "outputs"
@@ -59,10 +59,10 @@ def test_outage_does_not_replace_previous_artifacts(
     monkeypatch.setattr(cli, "source_snapshot", lambda _root: {"git_commit": "test"})
     monkeypatch.setattr(cli, "write_run_metadata", lambda *_args: None)
 
-    with pytest.raises(RuntimeError, match="three consecutive"):
-        asyncio.run(cli._run(tmp_path))
-    assert (outputs / "old.json").read_text(encoding="utf-8") == "previous output"
-    assert (traces / "trace.jsonl").read_text(encoding="utf-8") == "previous trace"
+    asyncio.run(cli._run(tmp_path))
+    assert not (outputs / "old.json").exists()
+    assert {path.stem for path in outputs.glob("*.json")} == set(case_ids)
+    assert "case_finalized" in (traces / "trace.jsonl").read_text(encoding="utf-8")
     assert (tmp_path / ".day09-run.json").read_text(encoding="utf-8") == "previous metadata"
 
 
@@ -75,6 +75,8 @@ def test_success_replaces_previous_artifacts(
     traces.mkdir()
     (outputs / "old.json").write_text("previous output", encoding="utf-8")
     (traces / "trace.jsonl").write_text("previous trace", encoding="utf-8")
+    connections = []
+    solved_cases = []
 
     class FakeContracts:
         def __init__(self, _root: Path) -> None:
@@ -92,9 +94,11 @@ def test_success_replaces_previous_artifacts(
 
     @asynccontextmanager
     async def fake_connection(_endpoint: str, _key: str, _contracts: FakeContracts):
+        connections.append(True)
         yield FakeGateway()
 
     async def fake_solve(case: dict, _gateway: FakeGateway, _trace: cli.TraceWriter) -> dict:
+        solved_cases.append(case["case_id"])
         return {"case_id": case["case_id"], "evidence_refs": ["ev_" + "a" * 24]}
 
     case_ids = ("L3A_CASE_001", "L3A_CASE_002")
@@ -115,6 +119,8 @@ def test_success_replaces_previous_artifacts(
     monkeypatch.setattr(cli, "write_run_metadata", lambda *_args: None)
 
     asyncio.run(cli._run(tmp_path))
+    assert len(connections) == 1
+    assert solved_cases == list(case_ids)
     assert not (outputs / "old.json").exists()
     assert {path.stem for path in outputs.glob("*.json")} == set(case_ids)
     assert "case_finalized" in (traces / "trace.jsonl").read_text(encoding="utf-8")

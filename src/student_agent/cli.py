@@ -42,51 +42,67 @@ async def _run(root: Path) -> None:
         staged_outputs = staging / "outputs"
         staged_outputs.mkdir()
         staged_trace = staging / "trace.jsonl"
-        trace = TraceWriter(staged_trace, contracts)
-        empty_cases = 0
-        outage = False
-
-        for case_id in case_set.case_ids:
-            case = case_set.cases[case_id]
-            trace.emit(case_id=case_id, event_type="case_received", actor="coordinator")
-            solved = False
+        staged_trace.touch()
+        case_ids = list(case_set.case_ids)
+        next_index = 0
+        attempts: dict[str, int] = {}
+        while next_index < len(case_ids):
             try:
-                # Keep one MCP session per case. The hosted gateway can reset a long-lived
-                # stream after several dozen calls; a case boundary is safe to reconnect.
                 async with connect_gateway(
                     settings.mcp_endpoint, settings.team_api_key, contracts
                 ) as gateway:
-                    discovered_tools = await gateway.list_tools()
-                    if not discovered_tools:
+                    if not await gateway.list_tools():
                         raise RuntimeError("MCP Gateway returned no tools")
-                    output = await solve_case(case, gateway, trace)
-                    contracts.validate_output(output, f"outputs/{case_id}.json")
-                    if output.get("case_id") != case_id:
-                        raise ValueError(f"solver returned a mismatched case_id for {case_id}")
-                    target = staged_outputs / f"{case_id}.json"
-                    target.write_text(
-                        json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                    )
-                    solved = True
-            except Exception:
-                # If the response and staged output were complete, a stream reset while
-                # closing the session is harmless. Any failure before that remains fatal.
-                if not solved:
+                    batch_end = min(next_index + 10, len(case_ids))
+                    while next_index < batch_end:
+                        case_id = case_ids[next_index]
+                        case = case_set.cases[case_id]
+                        attempt = attempts.get(case_id, 0)
+                        attempt_trace_path = staging / f"{case_id}-{attempt}.jsonl"
+                        trace = TraceWriter(attempt_trace_path, contracts)
+                        trace.emit(
+                            case_id=case_id,
+                            event_type="case_received",
+                            actor="coordinator",
+                        )
+                        output = await solve_case(case, gateway, trace)
+                        contracts.validate_output(output, f"outputs/{case_id}.json")
+                        if output.get("case_id") != case_id:
+                            raise ValueError(
+                                f"solver returned a mismatched case_id for {case_id}"
+                            )
+                        if not output["evidence_refs"] and attempt < 2:
+                            raise RuntimeError(
+                                "MCP returned no citable evidence for this attempt"
+                            )
+                        trace.emit(
+                            case_id=case_id,
+                            event_type="case_finalized",
+                            actor="coordinator",
+                        )
+                        target = staged_outputs / f"{case_id}.json"
+                        target.write_text(
+                            json.dumps(output, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        with staged_trace.open("a", encoding="utf-8") as destination:
+                            destination.write(
+                                attempt_trace_path.read_text(encoding="utf-8")
+                            )
+                        print(f"Completed {case_id}", flush=True)
+                        next_index += 1
+            except Exception as exc:
+                if next_index >= len(case_ids):
                     raise
-            if not solved:
-                raise RuntimeError(f"MCP case {case_id} did not produce an output")
-            if not output["evidence_refs"]:
-                empty_cases += 1
-            else:
-                empty_cases = 0
-            if empty_cases >= 3:
-                outage = True
-                break
-            trace.emit(case_id=case_id, event_type="case_finalized", actor="coordinator")
-
-        if outage:
-            raise RuntimeError("MCP returned no citable evidence for three consecutive cases")
+                case_id = case_ids[next_index]
+                attempts[case_id] = attempts.get(case_id, 0) + 1
+                if attempts[case_id] >= 3:
+                    raise RuntimeError(
+                        f"MCP transport failed for {case_id} after 3 attempts"
+                    ) from exc
+                await asyncio.sleep(2 * attempts[case_id])
         if source_snapshot(root) != source:
+
             raise ValueError("source or inputs changed during run; rerun day09 run")
         output_root.mkdir(parents=True, exist_ok=True)
         trace_path.parent.mkdir(parents=True, exist_ok=True)

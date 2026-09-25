@@ -51,14 +51,24 @@ def test_payment_references_not_fabricated_from_order_id(make_facts) -> None:
     assert extract_payment_references(facts) == []
 
 
-def test_payment_sequential_is_not_a_reference(make_facts) -> None:
+def test_payment_sequential_is_used_when_mcp_has_no_transaction_id(make_facts) -> None:
+    facts = make_facts(
+        payments=[
+            {"order_id": "order-xyz", "payment_sequential": "1", "payment_value": "79.00"},
+            {"order_id": "order-xyz", "payment_sequential": "2", "payment_value": "18.00"},
+        ]
+    )
+    assert extract_payment_references(facts) == ["1", "2"]
+
+
+def test_repeated_payment_sequential_is_one_reference(make_facts) -> None:
     # Actual MCP shape: payment rows carry a sequence and an order ID, but no
     # transaction or capture ID. Repeated sequence values identify one payment.
     facts = make_facts(payments=[
         {"order_id": "order-xyz", "payment_sequential": "1", "payment_value": "79.00"},
         {"order_id": "order-xyz", "payment_sequential": "1", "payment_value": "18.00"},
     ])
-    assert extract_payment_references(facts) == []
+    assert extract_payment_references(facts) == ["1"]
 
 
 def test_real_shipment_shape_without_identifier_stays_empty(make_facts) -> None:

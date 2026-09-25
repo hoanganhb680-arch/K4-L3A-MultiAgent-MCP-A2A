@@ -17,7 +17,7 @@ class Evidence:
 class FetchResult:
     """Distinguish confirmed absence from a failed MCP read."""
 
-    status: Literal["found", "not_found", "error"]
+    status: Literal["found", "not_found", "transient_error", "permanent_error"]
     evidence: Evidence | None = None
 
 
@@ -36,7 +36,9 @@ class CaseFacts:
     payments: list[dict[str, Any]] = field(default_factory=list)
     payment_events: list[dict[str, Any]] = field(default_factory=list)
     refund_events: list[dict[str, Any]] = field(default_factory=list)
-    refund_lookup_status: Literal["unknown", "found", "not_found", "error"] = "unknown"
+    refund_lookup_status: Literal[
+        "unknown", "found", "not_found", "transient_error", "permanent_error"
+    ] = "unknown"
     shipment: dict[str, Any] = field(default_factory=dict)
     policy_rules: dict[str, Any] = field(default_factory=dict)
     evidence: dict[str, Evidence] = field(default_factory=dict)

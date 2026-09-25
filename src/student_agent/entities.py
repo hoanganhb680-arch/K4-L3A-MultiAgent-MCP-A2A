@@ -55,13 +55,19 @@ def extract_seller_ids(facts: CaseFacts) -> list[str]:
 
 
 def extract_payment_references(facts: CaseFacts) -> list[str]:
-    """Read only canonical payment identifiers supplied by MCP."""
+    """Read the canonical payment identifier available in the MCP payload."""
     rows = [*facts.payments, *facts.payment_events]
     return _unique(
         [
-            clean_id(row.get(key))
+            next(
+                (
+                    value
+                    for key in ("payment_reference", "transaction_id", "capture_id")
+                    if (value := clean_id(row.get(key)))
+                ),
+                clean_id(row.get("payment_sequential")),
+            )
             for row in rows
-            for key in ("payment_reference", "transaction_id", "capture_id")
         ]
     )[:20]
 
